@@ -86,10 +86,14 @@ def is_blacklisted(name):
     'blacklist X' entry in any modprobe.d file.
     """
     blocked = False
+    unreadable = []
     for d in ["/etc/modprobe.d", "/lib/modprobe.d", "/run/modprobe.d"]:
         if not os.path.isdir(d):
             continue
         for f in glob.glob(os.path.join(d, "*.conf")):
+            if not os.access(f, os.R_OK):
+                unreadable.append(f)
+                continue
             content = read_file(f)
             for line in content.splitlines():
                 parts = line.lower().split()
@@ -100,6 +104,10 @@ def is_blacklisted(name):
                         blocked = True
                     if parts[0] == "install" and "/false" in line:
                         return True   # strongest form — stop immediately
+    if unreadable:
+        print(warn(f"Could not read {len(unreadable)} modprobe.d file(s) — run as root or fix permissions (chmod 644):"))
+        for p in unreadable:
+            print(f"         {p}")
     return blocked
 
 # ── main ──────────────────────────────────────────────────────────────────
