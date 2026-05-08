@@ -12,7 +12,7 @@ Two independent variants exist:
 
 | Variant | Modules involved | Privilege required |
 |---|---|---|
-| **ESP / xfrm** | `esp4`, `esp6` | `unshare(CLONE_NEWUSER\|CLONE_NEWNET)` |
+| **ESP / xfrm** | `esp4`, `esp6`, `ipcomp`, `ipcomp6` | `unshare(CLONE_NEWUSER\|CLONE_NEWNET)` |
 | **RxRPC** | `rxrpc` | None — any local user |
 
 Because it is a deterministic logic bug (no race condition required), it is highly reliable and does not panic the kernel on failure. A working public PoC exists at [V4bel/dirtyfrag](https://github.com/V4bel/dirtyfrag).
@@ -23,8 +23,8 @@ Because it is a deterministic logic bug (no race condition required), it is high
 
 The script is purely read-only. It does **not** load any modules, open any sockets, or call any kernel APIs. It inspects:
 
-- `/boot/config-<uname-r>` — kernel build options for `CONFIG_INET_ESP`, `CONFIG_INET6_ESP`, `CONFIG_AF_RXRPC`
-- `/lib/modules/<uname-r>/` — whether `.ko` files for the three modules exist on disk
+- `/boot/config-<uname-r>` — kernel build options for `CONFIG_INET_ESP`, `CONFIG_INET6_ESP`, `CONFIG_AF_RXRPC`, `CONFIG_INET_IPCOMP`, `CONFIG_INET6_IPCOMP`
+- `/lib/modules/<uname-r>/` — whether `.ko` files for the five modules exist on disk
 - `/proc/modules` — whether any of the modules are currently loaded
 - `/etc/modprobe.d/`, `/lib/modprobe.d/` — whether blacklist or `install /bin/false` entries are in place
 - `/proc/sys/kernel/unprivileged_userns_clone` — whether user namespaces are open (affects ESP variant)
@@ -82,7 +82,10 @@ sudo tee /etc/modprobe.d/dirtyfrag-mitigation.conf <<'EOF'
 install esp4 /bin/false
 install esp6 /bin/false
 install rxrpc /bin/false
+install ipcomp /bin/false
+install ipcomp6 /bin/false
 EOF
+sudo chmod 644 /etc/modprobe.d/dirtyfrag-mitigation.conf
 sudo update-initramfs -u -k all
 ```
 

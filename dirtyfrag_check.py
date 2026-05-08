@@ -80,35 +80,37 @@ def module_on_disk(name):
             return True
     return False
 
-def is_blacklisted(name):
-    """
-    Returns True if the module has an 'install X /bin/false' or
-    'blacklist X' entry in any modprobe.d file.
-    """
-    blocked = False
-    unreadable = []
+_unreadable_modprobe_files: list = []
+
+def _load_modprobe_rules() -> dict:
+    """Read all modprobe.d files once; return {module: 'false'|'blacklist'} map."""
+    global _unreadable_modprobe_files
+    rules: dict = {}
+    seen_unreadable: set = set()
     for d in ["/etc/modprobe.d", "/lib/modprobe.d", "/run/modprobe.d"]:
         if not os.path.isdir(d):
             continue
-        for f in glob.glob(os.path.join(d, "*.conf")):
+        for f in sorted(glob.glob(os.path.join(d, "*.conf"))):
             if not os.access(f, os.R_OK):
-                unreadable.append(f)
+                if f not in seen_unreadable:
+                    seen_unreadable.add(f)
+                    _unreadable_modprobe_files.append(f)
                 continue
-            content = read_file(f)
-            for line in content.splitlines():
+            for line in read_file(f).splitlines():
                 parts = line.lower().split()
-                if not parts or parts[0].startswith("#"):
+                if not parts or parts[0].startswith("#") or len(parts) < 2:
                     continue
-                if len(parts) >= 2 and parts[1] == name:
-                    if parts[0] == "blacklist":
-                        blocked = True
-                    if parts[0] == "install" and "/false" in line:
-                        return True   # strongest form — stop immediately
-    if unreadable:
-        print(warn(f"Could not read {len(unreadable)} modprobe.d file(s) — run as root or fix permissions (chmod 644):"))
-        for p in unreadable:
-            print(f"         {p}")
-    return blocked
+                mod = parts[1]
+                if parts[0] == "install" and "/false" in line:
+                    rules[mod] = "false"
+                elif parts[0] == "blacklist" and mod not in rules:
+                    rules[mod] = "blacklist"
+    return rules
+
+_modprobe_rules: dict = {}
+
+def is_blacklisted(name):
+    return _modprobe_rules.get(name) == "false" or name in _modprobe_rules
 
 # ── main ──────────────────────────────────────────────────────────────────
 
@@ -124,13 +126,24 @@ def main():
     if not cfg:
         print(warn("Could not read kernel config — some checks will be skipped."))
 
+    global _modprobe_rules
+    _modprobe_rules = _load_modprobe_rules()
+    if _unreadable_modprobe_files:
+        print(warn(f"Could not read {len(_unreadable_modprobe_files)} modprobe.d file(s) — blacklist results may be incomplete."))
+        print(warn("  Run as root or fix permissions (sudo chmod 644 /etc/modprobe.d/*.conf):"))
+        for p in _unreadable_modprobe_files:
+            print(f"         {p}")
+        print()
+
     loaded = lsmod_loaded()
 
     # ── Per-module state ──────────────────────────────────────────────────
     modules = {
-        "esp4":  "CONFIG_INET_ESP",
-        "esp6":  "CONFIG_INET6_ESP",
-        "rxrpc": "CONFIG_AF_RXRPC",
+        "esp4":   "CONFIG_INET_ESP",
+        "esp6":   "CONFIG_INET6_ESP",
+        "rxrpc":  "CONFIG_AF_RXRPC",
+        "ipcomp":  "CONFIG_INET_IPCOMP",
+        "ipcomp6": "CONFIG_INET6_IPCOMP",
     }
 
     print(color(BOLD, "--- Module state ---"))
@@ -186,20 +199,21 @@ def main():
     print()
     print(color(BOLD, "--- Variant verdicts ---"))
 
-    esp_reachable   = (module_status.get("esp4") or module_status.get("esp6"))
+    esp_reachable   = any(module_status.get(m) for m in ("esp4", "esp6", "ipcomp", "ipcomp6"))
     rxrpc_reachable = module_status.get("rxrpc", False)
 
     overall_vulnerable = False
 
-    # ESP variant: needs unshare(CLONE_NEWUSER|CLONE_NEWNET) — affected by AppArmor
+    # ESP/xfrm variant: needs unshare(CLONE_NEWUSER|CLONE_NEWNET) — affected by AppArmor
+    # Covers esp4, esp6, ipcomp, ipcomp6 (all xfrm-family modules)
     if esp_reachable and userns_open:
         aa_note = " (partially mitigated by AppArmor if aa_restrict=1)" if aa_restrict == "1" else ""
-        print(bad(f"ESP (xfrm) variant: REACHABLE{aa_note}"))
+        print(bad(f"ESP/xfrm variant: REACHABLE{aa_note}"))
         overall_vulnerable = True
     elif esp_reachable and not userns_open:
-        print(ok("ESP (xfrm) variant: Kernel blocks unprivileged user namespaces — ESP variant NOT reachable"))
+        print(ok("ESP/xfrm variant: Kernel blocks unprivileged user namespaces — NOT reachable"))
     else:
-        print(ok("ESP (xfrm) variant: esp4/esp6 modules not reachable — NOT vulnerable"))
+        print(ok("ESP/xfrm variant: esp4/esp6/ipcomp/ipcomp6 modules not reachable — NOT vulnerable"))
 
     # RxRPC variant: no namespace privilege needed, works as any unprivileged user
     if rxrpc_reachable:
